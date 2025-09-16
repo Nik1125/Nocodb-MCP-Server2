@@ -749,6 +749,5 @@ async def get_schema(
         if 'client' in locals():
             await client.aclose()
 
-app = mcp.app
 
 
