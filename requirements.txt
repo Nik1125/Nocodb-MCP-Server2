@@ -1,4 +1,4 @@
 mcp[cli]>=1.2
+fastmcp>=2.1
 httpx>=0.25.0
 pydantic>=2.0.0
-fastmcp>=2.1
