@@ -21,7 +21,8 @@ import httpx
 import logging
 from typing import Dict, List, Optional, Union, Any
 from pydantic import BaseModel, Field
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP
+mcp = FastMCP("NocoDB MCP Server")
 import sys
 import re
 
@@ -109,6 +110,9 @@ async def get_table_id(client: httpx.AsyncClient, table_name: str) -> str:
     logger.debug(f"Available tables: {[t.get('title') for t in tables]}")
     raise ValueError(error_msg)
 
+@mcp.tool
+def ping() -> str:
+    return "pong"
 
 @mcp.tool()
 async def retrieve_records(
@@ -746,4 +750,5 @@ async def get_schema(
             await client.aclose()
 
 app = mcp.app
+
 
