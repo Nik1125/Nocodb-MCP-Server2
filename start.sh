@@ -1,14 +1,11 @@
 #!/usr/bin/env sh
-set -eu
+set -euo pipefail
 
-PORT_TO_USE="${PORT:-8000}"
+PORT_TO_USE="${PORT:-8080}"
 echo "Resolved PORT=${PORT_TO_USE}"
-echo "Starting fastmcp (module import) on 0.0.0.0:${PORT_TO_USE}"
+echo "Starting FastMCP on 0.0.0.0:${PORT_TO_USE}"
 
-# важно: указываем, что это модуль, и даём PYTHONPATH=.
-export PYTHONPATH="/app:${PYTHONPATH:-}"
-
-exec fastmcp run --as-module nocodb_mcp_server:mcp \
+exec fastmcp run nocodb_mcp_server:app \
   --transport http \
   --host 0.0.0.0 \
   --port "${PORT_TO_USE}"
