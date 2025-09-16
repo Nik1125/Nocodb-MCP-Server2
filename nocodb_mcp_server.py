@@ -786,22 +786,22 @@ async def get_schema(
     finally:
         if 'client' in locals():
             await client.aclose()
-
+            
 @mcp.tool()
 async def list_tables(
-    nocodb_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    base_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    client = await get_nocodb_client(nocodb_url, api_token)
-    base = base_id or os.environ.get("NOCODB_BASE_ID")
-    if not base:
-        raise ValueError("NOCODB_BASE_ID is missing")
-    r = await client.get(f"/api/v2/meta/bases/{base}/tables")
-    r.raise_for_status()
-    data = r.json().get("list", [])
-    # вернём компактно id/title/name чтобы было видно, как правильно передавать
-    return [{"id": t.get("id"), "title": t.get("title"), "name": t.get("table_name") or t.get("name")} for t in data]
+    nocodb_url: str | None = None,
+    api_token: str | None = None,
+    base_id: str | None = None,
+) -> dict:
+    url, token, base = _resolve_params(nocodb_url, api_token, base_id)
+    async with (await _client(url, token)) as c:
+        resp = await c.get(f"/api/v2/meta/bases/{base}/tables")
+        resp.raise_for_status()
+        data = resp.json()  # обычно {"list":[...], "pageInfo":{...}}
+        return {
+            "tables": data.get("list", data),   # <-- всегда словарь
+            "pageInfo": data.get("pageInfo"),
+        }
 
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
@@ -828,4 +828,5 @@ if __name__ == "__main__":
         app.router.redirect_slashes = False
 
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
