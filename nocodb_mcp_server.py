@@ -752,15 +752,21 @@ import uvicorn, os
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
-    mcp_asgi = mcp.streamable_http_app()
+    mcp_asgi = mcp.streamable_http_app()  # ASGI-приложение MCP
 
+    # health для GET /
     async def health(_req):
         return PlainTextResponse("ok")
 
+    # Собираем единое ASGI-приложение:
+    #  - GET /          -> 200 ok
+    #  - POST /         -> прокидываем в MCP (на случай, если клиент шлёт в корень)
+    #  - /mcp  и /mcp/  -> MCP без редиректов и ошибок
     app = Starlette(routes=[
-        Route("/", health, methods=["GET", "HEAD"]),
-        Mount("/mcp", app=mcp_asgi),   # MCP остаётся здесь
-        # (ничего больше не нужно)
+        Route("/",     health,            methods=["GET", "HEAD"]),
+        Route("/",     ASGIApp(mcp_asgi), methods=["POST"]),
+        Route("/mcp",  ASGIApp(mcp_asgi)),          # принимает /mcp (любой метод)
+        Route("/mcp/", ASGIApp(mcp_asgi)),          # и /mcp/ (любой метод)
     ])
 
     uvicorn.run(app, host="0.0.0.0", port=port)
