@@ -25,11 +25,6 @@ from mcp.server.fastmcp import FastMCP, Context
 import sys
 import re
 
-from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
-from starlette.routing import Route, Mount
-import uvicorn
-
 
 print(f"Python version: {sys.version}")
 print(f"Starting NocoDB MCP server")
@@ -749,6 +744,11 @@ async def get_schema(
         if 'client' in locals():
             await client.aclose()
 
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route, Mount
+import uvicorn, OS
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
@@ -766,6 +766,7 @@ if __name__ == "__main__":
         ],
     )
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
