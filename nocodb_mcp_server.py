@@ -25,6 +25,7 @@ from mcp.server.fastmcp import FastMCP, Context
 import sys
 import re
 
+
 print(f"Python version: {sys.version}")
 print(f"Starting NocoDB MCP server")
 print(f"Args: {sys.argv}")
@@ -743,3 +744,6 @@ async def get_schema(
     finally:
         if 'client' in locals():
             await client.aclose()
+
+app = mcp.app
+
