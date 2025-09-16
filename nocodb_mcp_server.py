@@ -743,13 +743,3 @@ async def get_schema(
     finally:
         if 'client' in locals():
             await client.aclose()
-
-
-# Run the server
-        print("MCP server run() completed - this line should not appear if run() blocks properly", file=sys.stderr)
-    except Exception as e:
-        print(f"ERROR starting MCP server: {str(e)}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
