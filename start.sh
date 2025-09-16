@@ -3,11 +3,9 @@ set -euo pipefail
 
 PORT_TO_USE="${PORT:-8080}"
 echo "Resolved PORT=${PORT_TO_USE}"
-echo "Starting FastMCP on 0.0.0.0:${PORT_TO_USE}"
+echo "Starting MCP (official) on 0.0.0.0:${PORT_TO_USE}"
 
-# БЫЛО (неправильно): nocodb_mcp_server:app
-# СТАЛО (правильно):   nocodb_mcp_server.py:app  ← обязательно с .py
-exec fastmcp run ./nocodb_mcp_server.py \
-  --transport http \
+exec mcp run ./nocodb_mcp_server.py \
+  --transport streamable-http \
   --host 0.0.0.0 \
   --port "${PORT_TO_USE}"
