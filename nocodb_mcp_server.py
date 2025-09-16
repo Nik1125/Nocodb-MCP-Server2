@@ -25,6 +25,10 @@ from mcp.server.fastmcp import FastMCP, Context
 import sys
 import re
 
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route, Mount
+
 
 print(f"Python version: {sys.version}")
 print(f"Starting NocoDB MCP server")
@@ -750,14 +754,21 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 8080))
 
-    # По умолчанию streamable HTTP отдаётся на /mcp, менять не нужно.
-    # mcp.settings.streamable_http_path = "/mcp"  # (необязательно)
+    # ASGI-приложение MCP
+    mcp_asgi = mcp.streamable_http_app()  # отдаёт /mcp-эндпоинты
 
-    uvicorn.run(
-        mcp.streamable_http_app(),  # ← даём ASGI-приложение
-        host="0.0.0.0",
-        port=port,
-    )
+    # health на корне (для быстрой проверки и логов Railway)
+    async def health(_request):
+        return PlainTextResponse("ok")
+
+    # общий ASGI: корень + монтированный MCP на /mcp
+    app = Starlette(routes=[
+        Route("/", health),
+        Mount("/mcp", app=mcp_asgi),
+    ])
+
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
