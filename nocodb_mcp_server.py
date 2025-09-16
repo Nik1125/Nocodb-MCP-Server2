@@ -746,26 +746,24 @@ async def get_schema(
 
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 import uvicorn, os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
-    mcp_asgi = mcp.streamable_http_app()  # MCP ASGI-приложение
+    # MCP ASGI-приложения:
+    mcp_http = mcp.streamable_http_app()   # даёт /mcp (на будущее)
+    mcp_sse  = mcp.sse_app()               # даёт /sse  ← ЭТО n8n и будет использовать
 
     async def health(_req):
         return PlainTextResponse("ok")     # GET /
 
-    # Монтируем MCP и на /mcp, и на /mcp/
-    app = Starlette(routes=[
-        Route("/", health, methods=["GET", "HEAD"]),
-        Mount("/mcp",  app=mcp_asgi),   # принимает POST /mcp
-        Mount("/mcp/", app=mcp_asgi),   # и POST /mcp/
-    ])
+    # Делаем корневой Starlette и монтируем ОТДЕЛЬНО оба приложения на "/"
+    app = Starlette(routes=[Route("/", health, methods=["GET", "HEAD"])])
 
-    # ВАЖНО: отключаем авто-редирект слэшей (чтобы не было 307)
-    if hasattr(app.router, "redirect_slashes"):
-        app.router.redirect_slashes = False
+    # ВАЖНО: монтируем на КОРЕНЬ ("/"), чтобы ВНУТРЕННИЕ пути сохранились как /mcp и /sse
+    app.mount("/", mcp_http)
+    app.mount("/", mcp_sse)
 
     uvicorn.run(app, host="0.0.0.0", port=port)
