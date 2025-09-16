@@ -46,11 +46,23 @@ mcp = FastMCP("NocoDB MCP Server", log_level="INFO")
 NOCODB_BASE_ID = os.environ.get("NOCODB_BASE_ID")
 
 
-async def get_nocodb_client(ctx: Context = None) -> httpx.AsyncClient:
-    """Create and return an authenticated httpx client for Nocodb API requests"""
+#async def get_nocodb_client(ctx: Context = None) -> httpx.AsyncClient:
+#    """Create and return an authenticated httpx client for Nocodb API requests"""
     # Get environment variables
-    nocodb_url = os.environ.get("NOCODB_URL")
-    api_token = os.environ.get("NOCODB_API_TOKEN")
+#    nocodb_url = os.environ.get("NOCODB_URL")
+#    api_token = os.environ.get("NOCODB_API_TOKEN")
+async def get_nocodb_client(
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+) -> httpx.AsyncClient:
+    url = (nocodb_url or os.environ.get("NOCODB_URL") or "").rstrip("/")
+    token = api_token or os.environ.get("NOCODB_API_TOKEN")
+    if not url:
+        raise ValueError("NocoDB URL is not provided (param nocodb_url or ENV NOCODB_URL).")
+    if not token:
+        raise ValueError("NocoDB API token is not provided (param api_token or ENV NOCODB_API_TOKEN).")
+    headers = {"xc-token": token, "Content-Type": "application/json"}
+    return httpx.AsyncClient(base_url=url, headers=headers, timeout=30.0)
     
     if not nocodb_url:
         error_msg = "NOCODB_URL environment variable is not set"
@@ -75,39 +87,45 @@ async def get_nocodb_client(ctx: Context = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=nocodb_url, headers=headers, timeout=30.0)
 
 
-async def get_table_id(client: httpx.AsyncClient, table_name: str) -> str:
-    """Get the table ID from the table name using the hardcoded base ID"""
-    if not NOCODB_BASE_ID:
-        error_msg = "NOCODB_BASE_ID environment variable is not set"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-        
-    logger.info(f"Looking up table ID for '{table_name}' in base '{NOCODB_BASE_ID}'")
-    
-    # Get the list of tables in the base
-    try:
-        response = await client.get(f"/api/v2/meta/bases/{NOCODB_BASE_ID}/tables")
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        error_msg = f"Failed to get tables list: HTTP {e.response.status_code}"
-        logger.error(error_msg)
-        logger.debug(f"Response body: {e.response.text}")
-        raise ValueError(error_msg)
-    
-    tables = response.json().get("list", [])
-    logger.debug(f"Found {len(tables)} tables in base")
-    
-    # Find the table with the matching name
-    for table in tables:
-        if table.get("title") == table_name:
-            table_id = table.get("id")
-            logger.info(f"Found table ID for '{table_name}': {table_id}")
-            return table_id
-    
-    error_msg = f"Table '{table_name}' not found in base '{NOCODB_BASE_ID}'"
-    logger.error(error_msg)
-    logger.debug(f"Available tables: {[t.get('title') for t in tables]}")
-    raise ValueError(error_msg)
+# ВМЕСТО async def get_table_id(client, table_name: str) ...
+async def get_table_id(
+    client: httpx.AsyncClient,
+    base_id: Optional[str],
+    table_name: str,
+) -> str:
+    base = base_id or os.environ.get("NOCODB_BASE_ID")
+    if not base:
+        raise ValueError("NocoDB Base ID is not provided (param base_id or ENV NOCODB_BASE_ID).")
+
+    resp = await client.get(f"/api/v2/meta/bases/{base}/tables")
+    resp.raise_for_status()
+    tables = resp.json().get("list", [])
+
+    # 1) прямое совпадение по id
+    for t in tables:
+        if t.get("id") == table_name:
+            return t["id"]
+
+    # 2) допускаем совпадение по title / table_name / name (без учёта регистра и знаков '_',' ')
+    needle_raw = table_name.strip()
+    needle_norm = needle_raw.lower().replace("_", "").replace(" ", "")
+    for t in tables:
+        candidates = [
+            t.get("title") or "",
+            t.get("table_name") or t.get("name") or "",
+        ]
+        for cand in candidates:
+            cand_raw = (cand or "").strip()
+            if cand_raw == needle_raw:
+                return t["id"]
+            cand_norm = cand_raw.lower().replace("_", "").replace(" ", "")
+            if cand_norm == needle_norm:
+                return t["id"]
+
+    raise ValueError(
+        f"Table '{table_name}' not found in base '{base}'. "
+        f"Available: {[{'id': t.get('id'), 'title': t.get('title'), 'name': t.get('table_name') or t.get('name')} for t in tables]}"
+    )
 
 @mcp.tool()
 async def retrieve_records(
@@ -118,6 +136,11 @@ async def retrieve_records(
     offset: Optional[int] = 0,
     sort: Optional[str] = None,
     fields: Optional[str] = None,
+
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+    
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
@@ -171,7 +194,7 @@ async def retrieve_records(
         return {"error": True, "message": error_msg}
     
     # normalize table name so first letter of each word is uppercase
-    table_name = ' '.join(word.capitalize() for word in table_name.split(' '))
+    #table_name = ' '.join(word.capitalize() for word in table_name.split(' '))
     
     # Log query parameters for debugging
     params_info = {
@@ -266,6 +289,11 @@ async def create_records(
     table_name: str,
     data: Dict[str, Any],
     bulk: bool = False,
+    
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+    
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
@@ -406,6 +434,11 @@ async def update_records(
     data: Dict[str, Any] = None,
     bulk: bool = False,
     bulk_ids: Optional[List[str]] = None,
+    
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+    
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
@@ -533,6 +566,11 @@ async def delete_records(
     row_id: Optional[str] = None,
     bulk: bool = False,
     bulk_ids: Optional[List[str]] = None,
+
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+    
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
@@ -666,6 +704,11 @@ async def delete_records(
 @mcp.tool()
 async def get_schema(
     table_name: str,
+    
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+    
     ctx: Context = None
 ) -> Dict[str, Any]:
     """
@@ -744,6 +787,22 @@ async def get_schema(
         if 'client' in locals():
             await client.aclose()
 
+@mcp.tool()
+async def list_tables(
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    client = await get_nocodb_client(nocodb_url, api_token)
+    base = base_id or os.environ.get("NOCODB_BASE_ID")
+    if not base:
+        raise ValueError("NOCODB_BASE_ID is missing")
+    r = await client.get(f"/api/v2/meta/bases/{base}/tables")
+    r.raise_for_status()
+    data = r.json().get("list", [])
+    # вернём компактно id/title/name чтобы было видно, как правильно передавать
+    return [{"id": t.get("id"), "title": t.get("title"), "name": t.get("table_name") or t.get("name")} for t in data]
+
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route, Mount
@@ -769,3 +828,4 @@ if __name__ == "__main__":
         app.router.redirect_slashes = False
 
     uvicorn.run(app, host="0.0.0.0", port=port)
+
