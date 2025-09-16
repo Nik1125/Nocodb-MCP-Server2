@@ -747,7 +747,7 @@ async def get_schema(
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route, Mount
-import uvicorn, OS
+import uvicorn, os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
@@ -757,14 +757,12 @@ if __name__ == "__main__":
     async def health(_req):
         return PlainTextResponse("ok")
 
-    app = Starlette(
-        redirect_slashes=False,   # <- не перенаправлять /mcp <-> /mcp/
-        routes=[
-            Route("/", health, methods=["GET", "HEAD"]),
-            Mount("/mcp",  app=mcp_asgi),   # примет POST /mcp
-            Mount("/mcp/", app=mcp_asgi),   # и POST /mcp/
-        ],
-    )
+    app = Starlette(routes=[
+        Route("/", health, methods=["GET", "HEAD"]),
+        Mount("/mcp", app=mcp_asgi),   # MCP остаётся здесь
+        # (ничего больше не нужно)
+    ])
+
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
