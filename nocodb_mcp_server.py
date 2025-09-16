@@ -746,24 +746,30 @@ async def get_schema(
 
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
-from starlette.routing import Route
+from starlette.routing import Route, Mount
 import uvicorn, os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
-    # MCP ASGI-приложения:
-    mcp_http = mcp.streamable_http_app()   # даёт /mcp (на будущее)
-    mcp_sse  = mcp.sse_app()               # даёт /sse  ← ЭТО n8n и будет использовать
+    # ASGI-приложения MCP из официального SDK:
+    mcp_http = mcp.streamable_http_app()  # публикует /mcp
+    mcp_sse  = mcp.sse_app()              # публикует /sse
 
     async def health(_req):
-        return PlainTextResponse("ok")     # GET /
+        return PlainTextResponse("ok")    # GET /
 
-    # Делаем корневой Starlette и монтируем ОТДЕЛЬНО оба приложения на "/"
-    app = Starlette(routes=[Route("/", health, methods=["GET", "HEAD"])])
+    # ВАЖНО: Монтируем на КОРЕНЬ ("/") — чтобы внутренние пути сохранились
+    app = Starlette(
+        routes=[
+            Route("/", health, methods=["GET", "HEAD"]),
+            Mount("/", app=mcp_http),     # даёт /mcp
+            Mount("/", app=mcp_sse),      # даёт /sse
+        ]
+    )
 
-    # ВАЖНО: монтируем на КОРЕНЬ ("/"), чтобы ВНУТРЕННИЕ пути сохранились как /mcp и /sse
-    app.mount("/", mcp_http)
-    app.mount("/", mcp_sse)
+    # (по желанию) отключить авто-редирект со слэшами:
+    if hasattr(app.router, "redirect_slashes"):
+        app.router.redirect_slashes = False
 
     uvicorn.run(app, host="0.0.0.0", port=port)
