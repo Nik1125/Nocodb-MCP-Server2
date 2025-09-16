@@ -1,60 +1,46 @@
 #!/usr/bin/env python3
 """
-Nocodb MCP Server
-
-This server provides tools to interact with a Nocodb database through the Model Context Protocol.
-It offers CRUD operations (Create, Read, Update, Delete) for Nocodb tables.
-
-Environment Variables:
-- NOCODB_URL: The base URL of your Nocodb instance
-- NOCODB_API_TOKEN: The API token for authentication
-- NOCODB_BASE_ID: The ID of the Nocodb base to use
-
-Usage:
-1. Ensure the environment variables are set
-2. Run this script directly or use the MCP CLI
+NocoDB MCP Server (fixed)
+- Keeps original structure but fixes param resolution, base_id handling, and list_tables return type.
+- Removes accidental Context injection into get_nocodb_client.
+- Ensures all tools resolve (nocodb_url, api_token, base_id) consistently.
 """
 
 import os
 import json
 import httpx
 import logging
-from typing import Dict, List, Optional, Union, Any
-from pydantic import BaseModel, Field
+from typing import Dict, List, Optional, Any
 from mcp.server.fastmcp import FastMCP, Context
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route, Mount
+import uvicorn
 import sys
-import re
 
-
-print(f"Python version: {sys.version}")
-print(f"Starting NocoDB MCP server")
-print(f"Args: {sys.argv}")
-print(f"Env vars: NOCODB_URL exists: {'NOCODB_URL' in os.environ}")
-
-# Set up logging
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s [%(levelname)s] %(message)s',
-#     datefmt='%Y-%m-%d %H:%M:%S'
-# )
+# --- Logging ---
 logger = logging.getLogger("nocodb-mcp")
+logger.setLevel(logging.INFO)
 
-# Create the MCP server
+# --- MCP server ---
 mcp = FastMCP("NocoDB MCP Server", log_level="INFO")
 
-# Hardcoded base ID
-NOCODB_BASE_ID = os.environ.get("NOCODB_BASE_ID")
+# ---------- Helpers ----------
 
+def _resolve_base_id(base_id: Optional[str]) -> str:
+    base = base_id or os.environ.get("NOCODB_BASE_ID")
+    if not base:
+        raise ValueError("NocoDB Base ID is not provided (param base_id or ENV NOCODB_BASE_ID).")
+    return base
 
-#async def get_nocodb_client(ctx: Context = None) -> httpx.AsyncClient:
-#    """Create and return an authenticated httpx client for Nocodb API requests"""
-    # Get environment variables
-#    nocodb_url = os.environ.get("NOCODB_URL")
-#    api_token = os.environ.get("NOCODB_API_TOKEN")
 async def get_nocodb_client(
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
 ) -> httpx.AsyncClient:
+    """
+    Create an authenticated httpx AsyncClient for NocoDB.
+    Accepts params or falls back to env vars NOCODB_URL/NOCODB_API_TOKEN.
+    """
     url = (nocodb_url or os.environ.get("NOCODB_URL") or "").rstrip("/")
     token = api_token or os.environ.get("NOCODB_API_TOKEN")
     if not url:
@@ -63,50 +49,26 @@ async def get_nocodb_client(
         raise ValueError("NocoDB API token is not provided (param api_token or ENV NOCODB_API_TOKEN).")
     headers = {"xc-token": token, "Content-Type": "application/json"}
     return httpx.AsyncClient(base_url=url, headers=headers, timeout=30.0)
-    
-    if not nocodb_url:
-        error_msg = "NOCODB_URL environment variable is not set"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    if not api_token:
-        error_msg = "NOCODB_API_TOKEN environment variable is not set"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    # Remove trailing slash from URL if present
-    if nocodb_url.endswith("/"):
-        nocodb_url = nocodb_url[:-1]
-    
-    # Create httpx client with authentication headers - using xc-token as required by Nocodb v2 API
-    headers = {
-        "xc-token": api_token,
-        "Content-Type": "application/json"
-    }
-    
-    logger.debug(f"Creating client for Nocodb API at {nocodb_url}")
-    return httpx.AsyncClient(base_url=nocodb_url, headers=headers, timeout=30.0)
 
-
-# ВМЕСТО async def get_table_id(client, table_name: str) ...
 async def get_table_id(
     client: httpx.AsyncClient,
     base_id: Optional[str],
     table_name: str,
 ) -> str:
-    base = base_id or os.environ.get("NOCODB_BASE_ID")
-    if not base:
-        raise ValueError("NocoDB Base ID is not provided (param base_id or ENV NOCODB_BASE_ID).")
-
+    """
+    Resolve a table name or id to the table id, within a base.
+    Tries exact id match, then title/table_name/name (case/underscore-insensitive).
+    """
+    base = _resolve_base_id(base_id)
     resp = await client.get(f"/api/v2/meta/bases/{base}/tables")
     resp.raise_for_status()
     tables = resp.json().get("list", [])
 
-    # 1) прямое совпадение по id
+    # exact id match
     for t in tables:
         if t.get("id") == table_name:
             return t["id"]
 
-    # 2) допускаем совпадение по title / table_name / name (без учёта регистра и знаков '_',' ')
     needle_raw = table_name.strip()
     needle_norm = needle_raw.lower().replace("_", "").replace(" ", "")
     for t in tables:
@@ -127,6 +89,28 @@ async def get_table_id(
         f"Available: {[{'id': t.get('id'), 'title': t.get('title'), 'name': t.get('table_name') or t.get('name')} for t in tables]}"
     )
 
+# ---------- Tools ----------
+
+@mcp.tool()
+async def list_tables(
+    nocodb_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    base_id: Optional[str] = None,
+) -> dict:
+    """
+    List tables for the given base. Always returns a DICT to satisfy validators.
+    Return shape: {"tables": [...], "pageInfo": {...}}
+    """
+    client = await get_nocodb_client(nocodb_url, api_token)
+    base = _resolve_base_id(base_id)
+    try:
+        resp = await client.get(f"/api/v2/meta/bases/{base}/tables")
+        resp.raise_for_status()
+        data = resp.json()  # {"list":[...], "pageInfo":{...}} in NocoDB v2
+        return {"tables": data.get("list", data), "pageInfo": data.get("pageInfo")}
+    finally:
+        await client.aclose()
+
 @mcp.tool()
 async def retrieve_records(
     table_name: str,
@@ -140,425 +124,125 @@ async def retrieve_records(
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
     base_id: Optional[str] = None,
-    
-    ctx: Context = None
+    ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve one or multiple records from a Nocodb table.
-    
-    This tool allows you to query data from your Nocodb database tables with various options
-    for filtering, sorting, and pagination. It supports both single record retrieval by ID
-    and multi-record retrieval with conditions.
-    
-    Parameters:
-    - table_name: Name of the table to query
-    - row_id: (Optional) Specific row ID to retrieve a single record
-    - filters: (Optional) Filter conditions in Nocodb format, e.g. "(column,eq,value)"
-                See Nocodb docs for comparison operators like eq, neq, gt, lt, etc.
-    - limit: (Optional) Maximum number of records to return (default: 10)
-    - offset: (Optional) Number of records to skip for pagination (default: 0)
-    - sort: (Optional) Column to sort by, use "-" prefix for descending order
-    - fields: (Optional) Comma-separated list of fields to include in the response
-    
-    Returns:
-    - Dictionary containing the retrieved record(s) or error information
-    
-    Examples:
-    1. Get all records from a table (limited to 10):
-       retrieve_records(table_name="customers")
-       
-    2. Get a specific record by ID:
-       retrieve_records(table_name="customers", row_id="123")
-       
-    3. Filter records with conditions:
-       retrieve_records(
-           table_name="customers", 
-           filters="(age,gt,30)~and(status,eq,active)"
-       )
-       
-    4. Paginate results:
-       retrieve_records(table_name="customers", limit=20, offset=40)
-       
-    5. Sort results:
-       retrieve_records(table_name="customers", sort="-created_at")
-       
-    6. Select specific fields:
-       retrieve_records(table_name="customers", fields="id,name,email")
+    Retrieve one or multiple records from a NocoDB table.
     """
-    logger.info(f"Retrieve records request for table '{table_name}'")
-    
-    # Parameter validation
     if not table_name:
-        error_msg = "Table name is required"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # normalize table name so first letter of each word is uppercase
-    #table_name = ' '.join(word.capitalize() for word in table_name.split(' '))
-    
-    # Log query parameters for debugging
-    params_info = {
-        "row_id": row_id,
-        "filters": filters,
-        "limit": limit,
-        "offset": offset,
-        "sort": sort,
-        "fields": fields
-    }
-    logger.debug(f"Query parameters: {params_info}")
-    
+        return {"error": True, "message": "Table name is required"}
+
+    client = await get_nocodb_client(nocodb_url, api_token)
     try:
-        client = await get_nocodb_client(ctx)
-        
-        # Get the table ID from the table name
-        table_id = await get_table_id(client, table_name)
-        
-        # Determine the endpoint based on whether we're fetching a single record or multiple
+        table_id = await get_table_id(client, base_id, table_name)
+
         if row_id:
-            # Single record endpoint
             url = f"/api/v2/tables/{table_id}/records/{row_id}"
-            logger.info(f"Retrieving single record with ID: {row_id}")
             response = await client.get(url)
         else:
-            # Multiple records endpoint
             url = f"/api/v2/tables/{table_id}/records"
-            
-            # Build query parameters
             params = {}
-            if limit is not None:
-                params["limit"] = limit
-            if offset is not None:
-                params["offset"] = offset
-            if sort:
-                params["sort"] = sort
-            if fields:
-                params["fields"] = fields
-            if filters:
-                params["where"] = filters
-            
-            logger.info(f"Retrieving records with params: {params}")    
+            if limit is not None: params["limit"] = limit
+            if offset is not None: params["offset"] = offset
+            if sort: params["sort"] = sort
+            if fields: params["fields"] = fields
+            if filters: params["where"] = filters
             response = await client.get(url, params=params)
-        
-        # Handle response
-        response.raise_for_status()
-        result = response.json()
-        
-        # Print the number of records retrieved
-        if row_id:
-            # For single record retrieval
-            record_count = 1 if result and not result.get("error") else 0
-            logger.info(f"Retrieved {record_count} record from table '{table_name}'")
-        else:
-            # For multiple records retrieval
-            records = result.get("list", [])
-            record_count = len(records)
-            logger.info(f"Retrieved {record_count} records from table '{table_name}'")
-            
-            # Log pagination info if available
-            if "pageInfo" in result:
-                page_info = result.get("pageInfo", {})
-                logger.debug(f"Page info: {page_info}")
-        
-        return result
-        
-    except httpx.HTTPStatusError as e:
-        error_msg = f"HTTP error {e.response.status_code} retrieving records from '{table_name}'"
-        logger.error(error_msg)
-        logger.debug(f"Response body: {e.response.text}")
-        return {
-            "error": True,
-            "status_code": e.response.status_code,
-            "message": f"HTTP error: {e.response.text}"
-        }
-    except Exception as e:
-        error_msg = f"Error retrieving records from '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        logger.debug(traceback.format_exc())
-        return {
-            "error": True,
-            "message": f"Error: {str(e)}"
-        }
-    finally:
-        if 'client' in locals():
-            await client.aclose()
 
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
+    except Exception as e:
+        return {"error": True, "message": str(e)}
+    finally:
+        await client.aclose()
 
 @mcp.tool()
 async def create_records(
     table_name: str,
-    data: Dict[str, Any],
+    data: Any,
     bulk: bool = False,
-    
+
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
     base_id: Optional[str] = None,
-    
-    ctx: Context = None
+    ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Create one or multiple records in a Nocodb table.
-    
-    This tool allows you to insert new data into your Nocodb database tables.
-    It supports both single record creation and bulk operations for inserting
-    multiple records at once.
-    
-    Parameters:
-    - table_name: Name of the table to insert into
-    - data: For single record: Dict with column:value pairs
-            For bulk creation: List of dicts with column:value pairs
-    - bulk: (Optional) Set to True for bulk creation with multiple records
-    
-    Returns:
-    - Dictionary containing the created record(s) or error information
-    
-    Examples:
-    1. Create a single record:
-       create_records(
-           table_name="customers",
-           data={"name": "John Doe", "email": "john@example.com", "age": 35}
-       )
-       
-    2. Create multiple records in bulk:
-       create_records(
-           table_name="customers",
-           data=[
-               {"name": "John Doe", "email": "john@example.com", "age": 35},
-               {"name": "Jane Smith", "email": "jane@example.com", "age": 28}
-           ],
-           bulk=True
-       )
+    Create one or multiple records.
     """
-    logger.info(f"Create records request for table '{table_name}'")
-    
-    # Parameter validation
     if not table_name:
-        error_msg = "Table name is required"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-        
-    if not data:
-        error_msg = "Data is required for record creation"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # Ensure data is a list for bulk, or single dict otherwise
-    original_data = data # Keep a reference before potential modification
-    if bulk:
-        if not isinstance(data, list):
-            logger.warning(f"Bulk creation requested but data is not a list, converting single record to list")
-            data = [data]
-        elif not data: # Handle empty list for bulk
-             error_msg = "Data list cannot be empty for bulk creation"
-             logger.error(error_msg)
-             return {"error": True, "message": error_msg}
-    elif isinstance(data, list):
-        logger.warning(f"Single record creation requested but data is a list, using first item only")
-        data = data[0] if data else {}
-        if not data:
-            error_msg = "Data dictionary cannot be empty for single record creation"
-            logger.error(error_msg)
-            return {"error": True, "message": error_msg}
-            
-    # Log operation details
-    operation_type = "bulk" if bulk else "single record"
-    # Use original_data for accurate count if it was modified
-    record_count = len(data) if isinstance(data, list) else 1 
-    logger.debug(f"Creating {record_count} records ({operation_type})")
-    
-    try:
-        logger.info(f"Creating {record_count} records ({operation_type})")
-        client = await get_nocodb_client(ctx)
-        
-        # Get the table ID from the table name
-        table_id = await get_table_id(client, table_name)
-        
-        # Determine the endpoint based on whether we're doing bulk creation or single record
-        if bulk:
-            # Bulk creation endpoint
-            url = f"/api/v2/tables/{table_id}/records/bulk"
-            logger.info(f"Performing bulk creation of {len(data)} records")
-        else:
-            # Single record creation endpoint
-            url = f"/api/v2/tables/{table_id}/records"
-            logger.info(f"Creating single record")
-        
-        logger.info(f"Sending data to {url}")
-        # Make the request - Pass the Python dictionary/list directly to the json parameter
-        response = await client.post(url, json=data) 
-        
-        logger.info(f"Response Status: {response.status_code}")
-        logger.debug(f"Response Body: {response.text}")
-        # Handle response
-        response.raise_for_status()
-        result = response.json()
-        
-        logger.info(f"Successfully created record(s) in table '{table_name}'")
-        return result
-        
-    except httpx.HTTPStatusError as e:
-        error_msg = f"HTTP error {e.response.status_code} creating records in '{table_name}'"
-        logger.error(error_msg)
-        logger.error(f"Request Data: {data}") # Log data on error
-        logger.error(f"Response body: {e.response.text}")
-        return {
-            "error": True,
-            "status_code": e.response.status_code,
-            "message": f"HTTP error: {e.response.text}"
-        }
-    except ValueError as e: # Catch errors from get_table_id or data validation
-        error_msg = f"Error creating records in '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        return {
-            "error": True,
-            "message": error_msg
-        }
-    except Exception as e:
-        error_msg = f"Error creating records in '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        logger.debug(traceback.format_exc())
-        return {
-            "error": True,
-            "message": f"Error: {str(e)}"
-        }
-    finally:
-        if 'client' in locals():
-            await client.aclose()
+        return {"error": True, "message": "Table name is required"}
+    if data is None:
+        return {"error": True, "message": "Data is required"}
 
+    # Normalize bulk data
+    if bulk and not isinstance(data, list):
+        data = [data]
+    if not bulk and isinstance(data, list):
+        data = data[0] if data else {}
+
+    client = await get_nocodb_client(nocodb_url, api_token)
+    try:
+        table_id = await get_table_id(client, base_id, table_name)
+        if bulk:
+            url = f"/api/v2/tables/{table_id}/records/bulk"
+        else:
+            url = f"/api/v2/tables/{table_id}/records"
+        resp = await client.post(url, json=data)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
+    except Exception as e:
+        return {"error": True, "message": str(e)}
+    finally:
+        await client.aclose()
 
 @mcp.tool()
 async def update_records(
     table_name: str,
     row_id: Optional[str] = None,
-    data: Dict[str, Any] = None,
+    data: Optional[Dict[str, Any]] = None,
     bulk: bool = False,
     bulk_ids: Optional[List[str]] = None,
-    
+
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
     base_id: Optional[str] = None,
-    
-    ctx: Context = None
+    ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Update one or multiple records in a Nocodb table.
-    
-    This tool allows you to modify existing data in your Nocodb database tables.
-    It supports both single record updates by ID and bulk updates for multiple records.
-    
-    Parameters:
-    - table_name: Name of the table to update
-    - row_id: ID of the record to update (required for single record update)
-    - data: Dictionary with column:value pairs to update
-    - bulk: (Optional) Set to True for bulk updates
-    - bulk_ids: (Optional) List of record IDs to update when bulk=True
-    
-    Returns:
-    - Dictionary containing the updated record(s) or error information
-    
-    Examples:
-    1. Update a single record by ID:
-       update_records(
-           table_name="customers",
-           row_id="123",
-           data={"name": "John Smith", "status": "inactive"}
-       )
-       
-    2. Update multiple records in bulk by IDs:
-       update_records(
-           table_name="customers",
-           data={"status": "inactive"},  # Same update applied to all records
-           bulk=True,
-           bulk_ids=["123", "456", "789"]
-       )
+    Update one or multiple records.
     """
-    logger.info(f"Update records request for table '{table_name}'")
-    
-    # Parameter validation
     if not table_name:
-        error_msg = "Table name is required"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-        
+        return {"error": True, "message": "Table name is required"}
     if not data:
-        error_msg = "Data parameter is required for updates"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # Validate update operation parameters
+        return {"error": True, "message": "Data parameter is required for updates"}
     if bulk and not bulk_ids:
-        error_msg = "Bulk IDs are required for bulk updates"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    elif not bulk and not row_id:
-        error_msg = "Row ID is required for single record update"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # Log operation details
-    operation_type = "bulk" if bulk else "single record"
-    if bulk:
-        logger.debug(f"Updating {len(bulk_ids)} records in bulk")
-    else:
-        logger.debug(f"Updating single record with ID: {row_id}")
-        
-    try:
-        client = await get_nocodb_client(ctx)
-        
-        # Get the table ID from the table name
-        table_id = await get_table_id(client, table_name)
-        
-        # Determine the endpoint based on whether we're doing bulk update or single record
-        if bulk and bulk_ids:
-            # Bulk update by IDs endpoint
-            url = f"/api/v2/tables/{table_id}/records/bulk"
-            # For bulk updates with IDs, we need to include both ids and data
-            payload = {"ids": bulk_ids, "data": data}
-            logger.info(f"Performing bulk update of {len(bulk_ids)} records")
-            response = await client.patch(url, json=payload)
-        elif row_id:
-            # Single record update endpoint
-            url = f"/api/v2/tables/{table_id}/records/{row_id}"
-            logger.info(f"Updating record with ID: {row_id}")
-            response = await client.patch(url, json=data)
-        else:
-            error_msg = "Either row_id (for single update) or bulk=True with bulk_ids (for bulk update) must be provided"
-            logger.error(error_msg)
-            return {
-                "error": True,
-                "message": error_msg
-            }
-        
-        # Handle response
-        response.raise_for_status()
-        result = response.json()
-        
-        logger.info(f"Successfully updated record(s) in table '{table_name}'")
-        return result
-        
-    except httpx.HTTPStatusError as e:
-        error_msg = f"HTTP error {e.response.status_code} updating records in '{table_name}'"
-        logger.error(error_msg)
-        logger.debug(f"Response body: {e.response.text}")
-        return {
-            "error": True,
-            "status_code": e.response.status_code,
-            "message": f"HTTP error: {e.response.text}"
-        }
-    except Exception as e:
-        error_msg = f"Error updating records in '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        logger.debug(traceback.format_exc())
-        return {
-            "error": True,
-            "message": f"Error: {str(e)}"
-        }
-    finally:
-        if 'client' in locals():
-            await client.aclose()
+        return {"error": True, "message": "Bulk IDs are required for bulk updates"}
+    if (not bulk) and not row_id:
+        return {"error": True, "message": "Row ID is required for single record update"}
 
+    client = await get_nocodb_client(nocodb_url, api_token)
+    try:
+        table_id = await get_table_id(client, base_id, table_name)
+        if bulk and bulk_ids:
+            url = f"/api/v2/tables/{table_id}/records/bulk"
+            payload = {"ids": bulk_ids, "data": data}
+            resp = await client.patch(url, json=payload)
+        else:
+            url = f"/api/v2/tables/{table_id}/records/{row_id}"
+            resp = await client.patch(url, json=data)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
+    except Exception as e:
+        return {"error": True, "message": str(e)}
+    finally:
+        await client.aclose()
 
 @mcp.tool()
 async def delete_records(
@@ -570,263 +254,92 @@ async def delete_records(
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
     base_id: Optional[str] = None,
-    
-    ctx: Context = None
+    ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Delete one or multiple records from a Nocodb table.
-    
-    This tool allows you to remove data from your Nocodb database tables.
-    It supports both single record deletion by ID and bulk deletions for multiple records.
-    
-    Parameters:
-    - table_name: Name of the table to delete from
-    - row_id: ID of the record to delete (required for single record deletion)
-    - bulk: (Optional) Set to True for bulk deletion
-    - bulk_ids: (Optional) List of record IDs to delete when bulk=True
-    
-    Returns:
-    - Dictionary containing the operation result or error information
-    
-    Examples:
-    1. Delete a single record by ID:
-       delete_records(
-           table_name="customers",
-           row_id="123"
-       )
-       
-    2. Delete multiple records in bulk by IDs:
-       delete_records(
-           table_name="customers",
-           bulk=True,
-           bulk_ids=["123", "456", "789"]
-       )
+    Delete one or multiple records.
     """
-    logger.info(f"Delete records request for table '{table_name}'")
-    
-    # Parameter validation
     if not table_name:
-        error_msg = "Table name is required"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # normalize table name so first letter of each word is uppercase
-    table_name = ' '.join(word.capitalize() for word in table_name.split(' '))
-
-    # Validate delete operation parameters
+        return {"error": True, "message": "Table name is required"}
     if bulk and not bulk_ids:
-        error_msg = "Bulk IDs are required for bulk deletion"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    elif not bulk and not row_id:
-        error_msg = "Row ID is required for single record deletion"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
-    # Log operation details
-    operation_type = "bulk" if bulk else "single record"
-    if bulk:
-        logger.debug(f"Deleting {len(bulk_ids)} records in bulk")
-    else:
-        logger.debug(f"Deleting single record with ID: {row_id}")
-        
+        return {"error": True, "message": "Bulk IDs are required for bulk deletion"}
+    if (not bulk) and not row_id:
+        return {"error": True, "message": "Row ID is required for single record deletion"}
+
+    client = await get_nocodb_client(nocodb_url, api_token)
     try:
-        client = await get_nocodb_client(ctx)
-        
-        # Get the table ID from the table name
-        table_id = await get_table_id(client, table_name)
-        
-        # Determine the endpoint based on whether we're doing bulk deletion or single record
+        table_id = await get_table_id(client, base_id, table_name)
         if bulk and bulk_ids:
-            # Bulk deletion endpoint
             url = f"/api/v2/tables/{table_id}/records/bulk"
-            # For bulk deletions with IDs, we need to send the ids in the request body
-            logger.info(f"Performing bulk deletion of {len(bulk_ids)} records")
-            response = await client.request("DELETE", url, json={"ids": bulk_ids}) # Use explicit DELETE with body
-        elif row_id:
-            # Single record deletion endpoint
+            resp = await client.request("DELETE", url, json={"ids": bulk_ids})
+        else:
             url = f"/api/v2/tables/{table_id}/records/{row_id}"
-            logger.info(f"Deleting record with ID: {row_id}")
-            response = await client.delete(url)
-        else:
-            error_msg = "Either row_id (for single deletion) or bulk=True with bulk_ids (for bulk deletion) must be provided"
-            logger.error(error_msg)
-            return {
-                "error": True,
-                "message": error_msg
-            }
-        
-        # Handle response
-        response.raise_for_status()
-        
-        # Delete operations may return 200 or 204 with different body content
-        if response.status_code == 204: # No content
-             result = {"success": True, "message": "Record(s) deleted successfully"}
-        else:
-            try:
-                result = response.json()
-                # NocoDB bulk delete might return a number (count) or an object
-                if isinstance(result, (int, float)):
-                    result = {"success": True, "message": f"{result} record(s) deleted successfully"}
-                elif not isinstance(result, dict): # Handle unexpected formats
-                     result = {"success": True, "message": "Record(s) deleted successfully", "response_data": result}
-
-            except json.JSONDecodeError:
-                logger.warning("Delete operation returned non-empty, non-JSON response body")
-                result = {"success": True, "message": "Record(s) deleted successfully (non-JSON response)"}
-
-        logger.info(f"Successfully deleted record(s) from table '{table_name}'")
-        return result
-        
+            resp = await client.delete(url)
+        resp.raise_for_status()
+        # 204 no content -> fabricate success json
+        if resp.status_code == 204:
+            return {"success": True, "message": "Record(s) deleted successfully"}
+        try:
+            data = resp.json()
+            if isinstance(data, (int, float)):
+                return {"success": True, "message": f"{int(data)} record(s) deleted successfully"}
+            if not isinstance(data, dict):
+                return {"success": True, "message": "Record(s) deleted successfully", "response_data": data}
+            return data
+        except json.JSONDecodeError:
+            return {"success": True, "message": "Record(s) deleted successfully (non-JSON response)"}
     except httpx.HTTPStatusError as e:
-        error_msg = f"HTTP error {e.response.status_code} deleting records from '{table_name}'"
-        logger.error(error_msg)
-        logger.debug(f"Response body: {e.response.text}")
-        return {
-            "error": True,
-            "status_code": e.response.status_code,
-            "message": f"HTTP error: {e.response.text}"
-        }
+        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
     except Exception as e:
-        error_msg = f"Error deleting records from '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        logger.debug(traceback.format_exc())
-        return {
-            "error": True,
-            "message": f"Error: {str(e)}"
-        }
+        return {"error": True, "message": str(e)}
     finally:
-        if 'client' in locals():
-            await client.aclose()
-
+        await client.aclose()
 
 @mcp.tool()
 async def get_schema(
     table_name: str,
-    
     nocodb_url: Optional[str] = None,
     api_token: Optional[str] = None,
     base_id: Optional[str] = None,
-    
-    ctx: Context = None
+    ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve the schema (columns) of a Nocodb table.
-    
-    This tool fetches the metadata for a specific table, including details about its columns.
-    
-    Parameters:
-    - table_name: Name of the table to get the schema for
-    
-    Returns:
-    - Dictionary containing the table schema or error information. 
-      The schema details, including the list of columns, are typically nested within the response.
-    
-    Example:
-    Get the schema for the "products" table:
-       get_schema(table_name="products")
+    Retrieve table schema (columns) for a table.
     """
-    logger.info(f"Get schema request for table '{table_name}'")
-
-    # Parameter validation
     if not table_name:
-        error_msg = "Table name is required"
-        logger.error(error_msg)
-        return {"error": True, "message": error_msg}
-    
+        return {"error": True, "message": "Table name is required"}
+
+    client = await get_nocodb_client(nocodb_url, api_token)
     try:
-        client = await get_nocodb_client(ctx)
-        
-        # Get the table ID from the table name
-        table_id = await get_table_id(client, table_name)
-        
-        # Fetch table metadata using the table ID
-        # The endpoint /api/v2/meta/tables/{tableId} provides table details including columns
+        table_id = await get_table_id(client, base_id, table_name)
         url = f"/api/v2/meta/tables/{table_id}"
-        logger.info(f"Retrieving schema for table ID: {table_id} using url {url}")
-        
-        response = await client.get(url)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Log success and potentially the number of columns found
-        columns = result.get("columns", [])
-        logger.info(f"Successfully retrieved schema for table '{table_name}'. Found {len(columns)} columns.")
-        logger.debug(f"Schema details: {result}") # Log full schema for debugging if needed
-        
-        return result # Return the full table metadata which includes the columns
-
-    except httpx.HTTPStatusError as e:
-        error_msg = f"HTTP error {e.response.status_code} retrieving schema for '{table_name}'"
-        logger.error(error_msg)
-        logger.debug(f"Response body: {e.response.text}")
-        return {
-            "error": True,
-            "status_code": e.response.status_code,
-            "message": f"HTTP error: {e.response.text}"
-        }
-    except ValueError as e: # Catch errors from get_table_id
-        error_msg = f"Error retrieving schema for '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        return {
-            "error": True,
-            "message": error_msg
-        }
-    except Exception as e:
-        error_msg = f"Error retrieving schema for '{table_name}': {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        logger.debug(traceback.format_exc())
-        return {
-            "error": True,
-            "message": f"Error: {str(e)}"
-        }
-    finally:
-        if 'client' in locals():
-            await client.aclose()
-            
-@mcp.tool()
-async def list_tables(
-    nocodb_url: str | None = None,
-    api_token: str | None = None,
-    base_id: str | None = None,
-) -> dict:
-    url, token, base = _resolve_params(nocodb_url, api_token, base_id)
-    async with (await _client(url, token)) as c:
-        resp = await c.get(f"/api/v2/meta/bases/{base}/tables")
+        resp = await client.get(url)
         resp.raise_for_status()
-        data = resp.json()  # обычно {"list":[...], "pageInfo":{...}}
-        return {
-            "tables": data.get("list", data),   # <-- всегда словарь
-            "pageInfo": data.get("pageInfo"),
-        }
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
+    except Exception as e:
+        return {"error": True, "message": str(e)}
+    finally:
+        await client.aclose()
 
-from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
-from starlette.routing import Route, Mount
-import uvicorn, os
+# ---------- Starlette app (health + SSE) ----------
+
+def create_app():
+    mcp_sse = mcp.sse_app()  # exposes /sse
+    async def health(_req):
+        return PlainTextResponse("ok")
+    app = Starlette(routes=[
+        Route("/", health, methods=["GET", "HEAD"]),
+        Mount("/", app=mcp_sse),
+    ])
+    if hasattr(app.router, "redirect_slashes"):
+        app.router.redirect_slashes = False
+    return app
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-
-    # MCP сервер (FastMCP) ты создаешь выше, здесь только берем SSE-аппу
-    mcp_sse = mcp.sse_app()  # публикует /sse по умолчанию
-
-    async def health(_req):
-        return PlainTextResponse("ok")     # GET /
-
-    app = Starlette(routes=[
-        Route("/", health, methods=["GET", "HEAD"]),
-        # ВАЖНО: монтируем SSE на КОРЕНЬ, чтобы путь был ровно /sse
-        Mount("/", app=mcp_sse),
-    ])
-
-    # (необязательно) отключить редирект слэшей, но тут он не мешает
-    if hasattr(app.router, "redirect_slashes"):
-        app.router.redirect_slashes = False
-
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
-
+    print(f"Python version: {sys.version}")
+    print("Starting NocoDB MCP server (fixed)")
+    print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
+    uvicorn.run(create_app(), host="0.0.0.0", port=port)
