@@ -752,23 +752,19 @@ import uvicorn, os
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
-    # ASGI-приложения MCP из официального SDK:
-    mcp_http = mcp.streamable_http_app()  # публикует /mcp
-    mcp_sse  = mcp.sse_app()              # публикует /sse
+    # MCP сервер (FastMCP) ты создаешь выше, здесь только берем SSE-аппу
+    mcp_sse = mcp.sse_app()  # публикует /sse по умолчанию
 
     async def health(_req):
-        return PlainTextResponse("ok")    # GET /
+        return PlainTextResponse("ok")     # GET /
 
-    # ВАЖНО: Монтируем на КОРЕНЬ ("/") — чтобы внутренние пути сохранились
-    app = Starlette(
-        routes=[
-            Route("/", health, methods=["GET", "HEAD"]),
-            Mount("/", app=mcp_http),     # даёт /mcp
-            Mount("/", app=mcp_sse),      # даёт /sse
-        ]
-    )
+    app = Starlette(routes=[
+        Route("/", health, methods=["GET", "HEAD"]),
+        # ВАЖНО: монтируем SSE на КОРЕНЬ, чтобы путь был ровно /sse
+        Mount("/", app=mcp_sse),
+    ])
 
-    # (по желанию) отключить авто-редирект со слэшами:
+    # (необязательно) отключить редирект слэшей, но тут он не мешает
     if hasattr(app.router, "redirect_slashes"):
         app.router.redirect_slashes = False
 
