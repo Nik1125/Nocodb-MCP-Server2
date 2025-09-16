@@ -28,6 +28,7 @@ import re
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route, Mount
+import uvicorn
 
 
 print(f"Python version: {sys.version}")
@@ -749,25 +750,23 @@ async def get_schema(
             await client.aclose()
 
 if __name__ == "__main__":
-    import os
-    import uvicorn
-
     port = int(os.environ.get("PORT", 8080))
 
-    # ASGI-приложение MCP
-    mcp_asgi = mcp.streamable_http_app()  # отдаёт /mcp-эндпоинты
+    mcp_asgi = mcp.streamable_http_app()
 
-    # health на корне (для быстрой проверки и логов Railway)
-    async def health(_request):
+    async def health(_req):
         return PlainTextResponse("ok")
 
-    # общий ASGI: корень + монтированный MCP на /mcp
-    app = Starlette(routes=[
-        Route("/", health),
-        Mount("/mcp", app=mcp_asgi),
-    ])
-
+    app = Starlette(
+        redirect_slashes=False,   # <- не перенаправлять /mcp <-> /mcp/
+        routes=[
+            Route("/", health, methods=["GET", "HEAD"]),
+            Mount("/mcp",  app=mcp_asgi),   # примет POST /mcp
+            Mount("/mcp/", app=mcp_asgi),   # и POST /mcp/
+        ],
+    )
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
