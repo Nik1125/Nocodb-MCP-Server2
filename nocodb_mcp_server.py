@@ -746,25 +746,10 @@ async def get_schema(
 
 
 # Run the server
-if __name__ == "__main__":
-    print("Starting Nocodb MCP Server initialization...", file=sys.stderr)
-    sys.stderr.flush()  # Force output to display immediately
-    
-    # Check environment variables
-    required_vars = ["NOCODB_URL", "NOCODB_API_TOKEN", "NOCODB_BASE_ID"]
-    for var in required_vars:
-        value = os.environ.get(var)
-        print(f"Environment variable {var}: {'SET' if value else 'MISSING'}", file=sys.stderr)
-    sys.stderr.flush()
-    
-    print("Initializing MCP server...", file=sys.stderr)
-    sys.stderr.flush()
-    
-    try:
-        mcp.run()
         print("MCP server run() completed - this line should not appear if run() blocks properly", file=sys.stderr)
     except Exception as e:
         print(f"ERROR starting MCP server: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+
