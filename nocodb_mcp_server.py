@@ -746,17 +746,14 @@ async def get_schema(
 
 if __name__ == "__main__":
     import os
-    # Railway кладёт порт в переменную окружения PORT
     port = int(os.environ.get("PORT", 8080))
-    # поднимем Streamable HTTP на /mcp
-    from mcp.server.fastmcp import FastMCP  # уже есть вверху у тебя
-    # ВАЖНО: запускаем сам сервер
     mcp.run(
         transport="streamable-http",
-        host="0.0.0.0",
+        host="0.0.0.0",   # ← важно: слушаем на всех интерфейсах, а не 127.0.0.1
         port=port,
-        path="/mcp",  # итоговый endpoint будет .../mcp
+        path="/mcp",
     )
+
 
 
 
