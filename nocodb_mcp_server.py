@@ -21,7 +21,7 @@ import httpx
 import logging
 from typing import Dict, List, Optional, Union, Any
 from pydantic import BaseModel, Field
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 import sys
 import re
 
@@ -40,7 +40,7 @@ print(f"Env vars: NOCODB_URL exists: {'NOCODB_URL' in os.environ}")
 logger = logging.getLogger("nocodb-mcp")
 
 # Create the MCP server
-mcp = FastMCP("Nocodb MCP Server")
+mcp = FastMCP("NocoDB MCP Server", log_level="INFO")
 
 # Hardcoded base ID
 NOCODB_BASE_ID = os.environ.get("NOCODB_BASE_ID")
@@ -109,11 +109,7 @@ async def get_table_id(client: httpx.AsyncClient, table_name: str) -> str:
     logger.debug(f"Available tables: {[t.get('title') for t in tables]}")
     raise ValueError(error_msg)
 
-@mcp.tool
-def ping() -> str:
-    return "pong"
-
-@mcp.tool
+@mcp.tool()
 async def retrieve_records(
     table_name: str,
     row_id: Optional[str] = None,
@@ -265,7 +261,7 @@ async def retrieve_records(
             await client.aclose()
 
 
-@mcp.tool
+@mcp.tool()
 async def create_records(
     table_name: str,
     data: Dict[str, Any],
@@ -403,7 +399,7 @@ async def create_records(
             await client.aclose()
 
 
-@mcp.tool
+@mcp.tool()
 async def update_records(
     table_name: str,
     row_id: Optional[str] = None,
@@ -531,7 +527,7 @@ async def update_records(
             await client.aclose()
 
 
-@mcp.tool
+@mcp.tool()
 async def delete_records(
     table_name: str,
     row_id: Optional[str] = None,
@@ -667,7 +663,7 @@ async def delete_records(
             await client.aclose()
 
 
-@mcp.tool
+@mcp.tool()
 async def get_schema(
     table_name: str,
     ctx: Context = None
@@ -747,6 +743,7 @@ async def get_schema(
     finally:
         if 'client' in locals():
             await client.aclose()
+
 
 
 
