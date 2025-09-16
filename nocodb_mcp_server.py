@@ -325,114 +325,7 @@ async def get_schema(
 
 # ---------- New Tools ----------
 
-@mcp.tool()
-async def find_contact_by_name(
-    table_name: str,
-    name: str,
-    limit: int = 5,
-    nocodb_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    base_id: Optional[str] = None,
-    ctx: Context = None,
-) -> Dict[str, Any]:
-    """
-    Упрощённый поиск контакта по полю Contact_Name.
-    Пример: find_contact_by_name("Contacts", "Nikita Aleksyeyenko", 1)
 
-    Возвращает ровно то, что возвращает /tables/{id}/records.
-    """
-    if not table_name:
-        return {"error": True, "message": "Table name is required"}
-    if not name:
-        return {"error": True, "message": "Name is required"}
-
-    client = await get_nocodb_client(nocodb_url, api_token)
-    try:
-        table_id = await get_table_id(client, base_id, table_name)
-
-        # Собираем корректный where (с кавычками для строки)
-        where = f"(Contact_Name,eq,'{name}')"
-
-        params = {"limit": limit, "where": where}
-        url = f"/api/v2/tables/{table_id}/records"
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as e:
-        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
-    except Exception as e:
-        return {"error": True, "message": str(e)}
-    finally:
-        await client.aclose()
-
-@mcp.tool()
-async def find_by_field(
-    table_name: str,
-    field: str,
-    value: Any,
-    op: str = "eq",          # eq, neq, gt, gte, lt, lte, like, in, nin ...
-    limit: int = 25,
-    nocodb_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    base_id: Optional[str] = None,
-    ctx: Context = None,
-) -> Dict[str, Any]:
-    """
-    Универсальный поиск по одному полю.
-    Примеры:
-      find_by_field("Contacts", "Contact_Name", "Nikita", op="eq", limit=1)
-      find_by_field("Leads", "Score", 80, op="gt")
-      find_by_field("Contacts", "Email", "%@gmail.com", op="like")
-    """
-    if not table_name:
-        return {"error": True, "message": "Table name is required"}
-    if not field:
-        return {"error": True, "message": "Field is required"}
-
-    # Валидируем оператор
-    allowed_ops = {"eq","neq","gt","gte","lt","lte","like","in","nin"}
-    if op not in allowed_ops:
-        return {"error": True, "message": f"Unsupported op '{op}'. Allowed: {sorted(allowed_ops)}"}
-
-    # Подготовим значение: строки в кавычки, числа — как есть, списки для IN/NIN
-    def _fmt(v: Any) -> str:
-        if v is None:
-            return "null"
-        if isinstance(v, (int, float)):
-            return str(v)
-        if isinstance(v, (list, tuple)) and op in {"in","nin"}:
-            # массив значений: ('A','B','C')
-            parts = []
-            for itm in v:
-                if isinstance(itm, (int, float)):
-                    parts.append(str(itm))
-                else:
-                    s = str(itm).replace("'", "''")
-                    parts.append(f"'{s}'")
-            return f"({','.join(parts)})"
-        # строка по умолчанию
-        s = str(v).replace("'", "''")
-        return f"'{s}'"
-
-    try:
-        client = await get_nocodb_client(nocodb_url, api_token)
-        table_id = await get_table_id(client, base_id, table_name)
-
-        where = f"({field},{op},{_fmt(value)})"
-        params = {"limit": limit, "where": where}
-        url = f"/api/v2/tables/{table_id}/records"
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as e:
-        return {"error": True, "status_code": e.response.status_code, "message": e.response.text}
-    except Exception as e:
-        return {"error": True, "message": str(e)}
-    finally:
-        try:
-            await client.aclose()
-        except Exception:
-            pass
 
 # ---------- Starlette app (health + SSE) ----------
 
@@ -454,5 +347,6 @@ if __name__ == "__main__":
     print("Starting NocoDB MCP server (fixed)")
     print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
     uvicorn.run(create_app(), host="0.0.0.0", port=port)
+
 
 
