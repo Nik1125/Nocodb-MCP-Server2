@@ -749,33 +749,23 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route, Mount
 import uvicorn, os
 
-from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
-from starlette.routing import Route, Mount
-import uvicorn, os
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
 
-    mcp_asgi = mcp.streamable_http_app()
+    mcp_asgi = mcp.streamable_http_app()  # MCP ASGI-приложение
 
     async def health(_req):
-        return PlainTextResponse("ok")
+        return PlainTextResponse("ok")     # GET /
 
-    # Важно: монтируем MCP на два пути, чтобы не было 307
+    # Монтируем MCP и на /mcp, и на /mcp/
     app = Starlette(routes=[
         Route("/", health, methods=["GET", "HEAD"]),
-        Mount("/mcp",  app=mcp_asgi),  # примет /mcp
-        Mount("/mcp/", app=mcp_asgi),  # и /mcp/
+        Mount("/mcp",  app=mcp_asgi),   # принимает POST /mcp
+        Mount("/mcp/", app=mcp_asgi),   # и POST /mcp/
     ])
 
+    # ВАЖНО: отключаем авто-редирект слэшей (чтобы не было 307)
+    if hasattr(app.router, "redirect_slashes"):
+        app.router.redirect_slashes = False
+
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
