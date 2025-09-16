@@ -746,12 +746,17 @@ async def get_schema(
 
 if __name__ == "__main__":
     import os
+    import uvicorn
+
     port = int(os.environ.get("PORT", 8080))
-    mcp.run(
-        transport="streamable-http",
-        host="0.0.0.0",   # ← важно: слушаем на всех интерфейсах, а не 127.0.0.1
+
+    # По умолчанию streamable HTTP отдаётся на /mcp, менять не нужно.
+    # mcp.settings.streamable_http_path = "/mcp"  # (необязательно)
+
+    uvicorn.run(
+        mcp.streamable_http_app(),  # ← даём ASGI-приложение
+        host="0.0.0.0",
         port=port,
-        path="/mcp",
     )
 
 
