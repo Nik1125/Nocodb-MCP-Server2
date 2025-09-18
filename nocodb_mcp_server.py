@@ -18,7 +18,7 @@ from starlette.routing import Route, Mount
 import uvicorn
 import sys
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONRespons
+from starlette.responses import JSONResponse
 
 # --- Authorization: Bearer <MCP_AUTH_TOKEN> ---
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -366,6 +366,7 @@ if __name__ == "__main__":
     print("Starting NocoDB MCP server (fixed)")
     print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
     uvicorn.run(create_app(), host="0.0.0.0", port=port)
+
 
 
 
