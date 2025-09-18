@@ -356,9 +356,11 @@ def create_app():
         Route("/", health, methods=["GET", "HEAD"]),
         Mount("/", app=mcp_sse),
     ])
+    app.add_middleware(AuthMiddleware)
     if hasattr(app.router, "redirect_slashes"):
         app.router.redirect_slashes = False
     return app
+    
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
@@ -366,6 +368,7 @@ if __name__ == "__main__":
     print("Starting NocoDB MCP server (fixed)")
     print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
     uvicorn.run(create_app(), host="0.0.0.0", port=port)
+
 
 
 
