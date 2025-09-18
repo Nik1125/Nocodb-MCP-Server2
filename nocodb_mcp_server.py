@@ -21,21 +21,52 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 # --- Authorization: Bearer <MCP_AUTH_TOKEN> ---
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        # Разрешим health без токена, всё остальное — только с токеном
-        if request.url.path == "/" and request.method in ("GET", "HEAD"):
-            return await call_next(request)
+class BearerAuthASGI:
+    """
+    Простая ASGI-мидлвара: проверяет Authorization: Bearer <MCP_AUTH_TOKEN>.
+    Совместима со streaming/SSE.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Только HTTP/SSE/WebSocket интересуют
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+
+        path   = scope.get("path", "/")
+        method = scope.get("method", "GET")
+
+        # health без авторизации
+        if path == "/" and method in ("GET", "HEAD"):
+            return await self.app(scope, receive, send)
 
         secret = os.environ.get("MCP_AUTH_TOKEN")
         if not secret:
-            return JSONResponse({"error": "Server misconfigured: MCP_AUTH_TOKEN not set"}, 500)
+            return await self._json(send, 500, {"error": "Server misconfigured: MCP_AUTH_TOKEN not set"})
 
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth.split(" ", 1)[1].strip() != secret:
-            return JSONResponse({"error": "Unauthorized"}, 401)
+        # читаем заголовки
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        token = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else None
 
-        return await call_next(request)
+        if token != secret:
+            return await self._json(send, 401, {"error": "Unauthorized"})
+
+        # пускаем дальше (SSE/стрим — ок)
+        return await self.app(scope, receive, send)
+
+    async def _json(self, send, status, payload: dict):
+        body = json.dumps(payload).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode())
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
 
 # --- Logging ---
 logger = logging.getLogger("nocodb-mcp")
@@ -356,9 +387,9 @@ def create_app():
         Route("/", health, methods=["GET", "HEAD"]),
         Mount("/", app=mcp_sse),
     ])
-    app.add_middleware(AuthMiddleware)
     if hasattr(app.router, "redirect_slashes"):
         app.router.redirect_slashes = False
+    app = BearerAuthASGI(app)    
     return app
     
 
@@ -368,6 +399,7 @@ if __name__ == "__main__":
     print("Starting NocoDB MCP server (fixed)")
     print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
     uvicorn.run(create_app(), host="0.0.0.0", port=port)
+
 
 
 
