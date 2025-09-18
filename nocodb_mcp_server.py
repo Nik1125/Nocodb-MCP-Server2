@@ -17,6 +17,25 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route, Mount
 import uvicorn
 import sys
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONRespons
+
+# --- Authorization: Bearer <MCP_AUTH_TOKEN> ---
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Разрешим health без токена, всё остальное — только с токеном
+        if request.url.path == "/" and request.method in ("GET", "HEAD"):
+            return await call_next(request)
+
+        secret = os.environ.get("MCP_AUTH_TOKEN")
+        if not secret:
+            return JSONResponse({"error": "Server misconfigured: MCP_AUTH_TOKEN not set"}, 500)
+
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth.split(" ", 1)[1].strip() != secret:
+            return JSONResponse({"error": "Unauthorized"}, 401)
+
+        return await call_next(request)
 
 # --- Logging ---
 logger = logging.getLogger("nocodb-mcp")
@@ -347,6 +366,7 @@ if __name__ == "__main__":
     print("Starting NocoDB MCP server (fixed)")
     print(f"Env NOCODB_URL set: {'NOCODB_URL' in os.environ}")
     uvicorn.run(create_app(), host="0.0.0.0", port=port)
+
 
 
 
